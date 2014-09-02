@@ -4,8 +4,8 @@ from multiprocessing import Queue, Process
 from Queue import Empty as QEmpty
 import os
 import sys
-from waveplot.waveplot import WavePlot
-from mutagenx import File
+from waveplot import WavePlot
+from mutagen import File
 import json
 
 def pprint(data):
