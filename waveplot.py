@@ -20,12 +20,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+"""Provides helper classes and functions for retrieving and storing WavePlot
+data on the WavePlot server, at http://waveplot.net."""
+
+from __future__ import print_function
+
 import os
 import requests
-import uuid
 import base64
 import json
 import zlib
+import simplejson
 
 from ctypes import Structure, c_char_p, c_uint32, c_uint8, c_uint16, POINTER, \
     c_float, c_size_t, cdll
@@ -35,6 +40,8 @@ THUMB_IMAGE_HEIGHT = 21
 
 PREVIEW_IMAGE_WIDTH = 400
 PREVIEW_IMAGE_HEIGHT = 151
+
+SERVER = b'http://waveplot.net'
 
 
 class _File(Structure):
@@ -72,6 +79,7 @@ class _DR(Structure):
         ("processed_samples", c_size_t)
     ]
 
+
 class _WavePlot(Structure):
     _fields_ = [
         ("values", POINTER(c_float)),
@@ -82,10 +90,13 @@ class _WavePlot(Structure):
 
 
 class WavePlot(object):
+    lib = None
+
     def __init__(self, *args, **kwargs):
         super(WavePlot, self).__init__(*args, **kwargs)
 
-        self.lib = None
+        if self.lib is None:
+            WavePlot._init_libwaveplot()
 
         self.uuid = None
         self.length = None
@@ -102,90 +113,40 @@ class WavePlot(object):
 
         self.image_sha1 = None
         self.thumbnail = None
-        self.thumbnail_c = None
         self.sonic_hash = None
 
         self.version = None
 
         self.data = None
 
-    def _init_libwaveplot(self):
+    @classmethod
+    def _init_libwaveplot(cls):
         """ Initializes the libwaveplot library, which should have been
         installed on this machine along with python-waveplot. If not, raise an
         Exception to show that the library wasn't found and the installation is
         bad. """
 
-        self.lib = cdll.LoadLibrary("libwaveplot.so.1.0")
+        cls.lib = cdll.LoadLibrary("libwaveplot.so.1.0")
 
-        self.lib.init()
-        self.lib.alloc_file.restype = POINTER(_File)
-        self.lib.alloc_info.restype = POINTER(_Info)
-        self.lib.alloc_audio_samples.restype = POINTER(_AudioSamples)
-        self.lib.alloc_waveplot.restype = POINTER(_WavePlot)
-        self.lib.alloc_dr.restype = POINTER(_DR)
-        self.lib.version.restype = c_char_p
+        cls.lib.init()
+        cls.lib.alloc_file.restype = POINTER(_File)
+        cls.lib.alloc_info.restype = POINTER(_Info)
+        cls.lib.alloc_audio_samples.restype = POINTER(_AudioSamples)
+        cls.lib.alloc_waveplot.restype = POINTER(_WavePlot)
+        cls.lib.alloc_dr.restype = POINTER(_DR)
+        cls.lib.version.restype = c_char_p
 
-    @staticmethod
-    def resample_data(data, target_length, target_amplitude):
-        # Calculate the number of data values per new data value
-        print(len(data))
-        resample_factor = float(len(data)) / target_length
+    def _get_waveplot_ptr(self):
+        w_ptr = self.lib.alloc_waveplot()
 
-        # Check whether it's a down-sample
-        if resample_factor > 1.0:
-            new_data = []
-            current_weighting = resample_factor
-            current_value = 0.0
+        scaled_data = [float(x)/200.0 for x in bytearray(self.data)]
 
-            for value in data:
-                value = ord(value)
-
-                current_value += value * min(current_weighting, 1.0)
-                current_weighting -= 1.0
-
-                # Negative, cap off previous value, make new
-                if current_weighting <= 0.0:
-                    new_data.append(current_value / resample_factor)
-                    current_value = -value * current_weighting
-                    current_weighting += resample_factor
-        else:
-            new_data = [ord(value) for value in data]
-
-        amplitude_factor = float(target_amplitude) / 200
-
-        return "".join(chr(int((v*amplitude_factor) + 0.5)) for v in new_data)
-
-    def make_hash(self):
-        # Restrict data to 5% points (trimmed length)
-        start_index = end_index = 0
-        for i in range(0,len(self.data)):
-            if ord(self.data[i]) > 10:
-                start_index = i
-                break
-
-        for i in range(len(self.data) - 1,-1,-1):
-            if ord(self.data[i]) > 10:
-                end_index = i
-                break
-
-        #print(start_index)
-        #print(end_index)
-
-        image_data = self.data[start_index:end_index+1]
-
-        # Compute value, converting to ASCII '0' and '1' for int conversion.
-        barcode_str = b"".join(chr(ord(x) + 0x30) for x in
-                              WavePlot.resample_data(image_data, 16, 1))
-
-        self.barcode = int(barcode_str,2)
+        w_ptr.contents.values = (c_float * len(scaled_data))(*scaled_data)
+        w_ptr.contents.length = len(scaled_data)
+        w_ptr.contents.capacity = len(scaled_data)
 
     def generate(self, audio_path):
         """ Generates a WavePlot from an audio file on the local machine. """
-
-        self.path = audio_path
-
-        if self.lib is None:
-            self._init_libwaveplot()
 
         # Load required data structures
         f_ptr = self.lib.alloc_file()
@@ -193,8 +154,7 @@ class WavePlot(object):
         w_ptr = self.lib.alloc_waveplot()
         d_ptr = self.lib.alloc_dr()
 
-        audio_path = audio_path.encode("utf-8")
-        os.path.abspath(audio_path)
+        audio_path = os.path.abspath(audio_path).encode("utf-8")
 
         if not os.path.isfile(audio_path):
             return
@@ -250,20 +210,13 @@ class WavePlot(object):
         self.lib.free_file(f_ptr)
 
     def generate_preview(self):
-        if self.lib is None:
-            self._init_libwaveplot()
+        w_ptr = self._get_waveplot_ptr()
 
-        w_ptr = self.lib.alloc_waveplot()
+        self.lib.resample_waveplot(w_ptr, PREVIEW_IMAGE_WIDTH,
+                                   int(PREVIEW_IMAGE_HEIGHT / 2))
 
-        normalized_data = [float(x)/200.0 for x in bytearray(self.data)]
-
-        w_ptr.contents.values = (c_float * len(normalized_data))(*normalized_data)
-        w_ptr.contents.length = len(normalized_data)
-        w_ptr.contents.capacity = len(normalized_data)
-
-        self.lib.resample_waveplot(w_ptr, PREVIEW_IMAGE_WIDTH, int(PREVIEW_IMAGE_HEIGHT / 2));
-
-        resampled_data = [int(w_ptr.contents.resample[x]) for x in range(PREVIEW_IMAGE_WIDTH)]
+        resampled_data = [int(w_ptr.contents.resample[x])
+                          for x in range(PREVIEW_IMAGE_WIDTH)]
 
         w_ptr.contents.values = POINTER(c_float)()
 
@@ -272,20 +225,13 @@ class WavePlot(object):
         return resampled_data
 
     def generate_thumbnail(self):
-        if self.lib is None:
-            self._init_libwaveplot()
+        w_ptr = self._get_waveplot_ptr()
 
-        w_ptr = self.lib.alloc_waveplot()
+        self.lib.resample_waveplot(w_ptr, THUMB_IMAGE_WIDTH,
+                                   int(THUMB_IMAGE_HEIGHT / 2))
 
-        normalized_data = [float(x)/200.0 for x in bytearray(self.data)]
-
-        w_ptr.contents.values = (c_float * len(normalized_data))(*normalized_data)
-        w_ptr.contents.length = len(normalized_data)
-        w_ptr.contents.capacity = len(normalized_data)
-
-        self.lib.resample_waveplot(w_ptr, THUMB_IMAGE_WIDTH, int(THUMB_IMAGE_HEIGHT / 2));
-
-        resampled_data = [int(w_ptr.contents.resample[x]) for x in range(THUMB_IMAGE_WIDTH)]
+        resampled_data = [int(w_ptr.contents.resample[x])
+                          for x in range(THUMB_IMAGE_WIDTH)]
 
         w_ptr.contents.values = POINTER(c_float)()
 
@@ -293,45 +239,62 @@ class WavePlot(object):
 
         return resampled_data
 
-    def get(self, uuid):
-        url = b"http://waveplot.net/api/waveplot/{}"
+    def generate_sonic_hash(self):
+        w_ptr = self._get_waveplot_ptr()
 
-        response = requests.get(url.format(uuid))
+        self.lib.resample_waveplot(w_ptr, 16, 1)
 
-        data = response.json()
+        resampled_data = [int(w_ptr.contents.resample[x]) for x in range(16)]
 
-        self.uuid = uuid
-        self.length = data['length']
-        self.trimmed_length = data['trimmed_length']
+        w_ptr.contents.values = POINTER(c_float)()
 
-        self.dr_level = data['dr_level']
+        self.lib.free_waveplot(w_ptr)
 
-        self.source_type = data['source_type']
-        self.sample_rate = data['sample_rate']
-        self.bit_depth = data['bit_depth']
-        self.bit_rate = data['bit_rate']
+        # Compute value, converting to ASCII '0' and '1' for int conversion.
+        sonic_hash_str = b"".join(chr(ord(x) + 0x30) for x in resampled_data)
 
-        self.num_channels = data['num_channels']
+        self.sonic_hash = int(sonic_hash_str, 2)
 
-        self.image_sha1 = data['image_sha1']
-        self.thumbnail = data['thumbnail']
-        self.sonic_hash = data['sonic_hash']
+    def get(self, wp_uuid):
+        url = SERVER + b'/api/waveplot/{}'.format(wp_uuid)
 
-        self.version = data['version']
+        response = requests.get(url)
 
-        response = requests.get(url.format(uuid)+"/full")
-        data = response.json()
-        self.data = base64.b64decode(data['data'])
+        metadata = response.json()
+
+        response = requests.get(url + "/full")
+        waveplot_data = response.json()
+
+        self.uuid = metadata['uuid']
+        self.length = metadata['length']
+        self.trimmed_length = metadata['trimmed_length']
+
+        self.dr_level = metadata['dr_level']
+
+        self.source_type = metadata['source_type']
+        self.sample_rate = metadata['sample_rate']
+        self.bit_depth = metadata['bit_depth']
+        self.bit_rate = metadata['bit_rate']
+
+        self.num_channels = metadata['num_channels']
+
+        self.image_sha1 = metadata['image_sha1']
+        self.thumbnail = metadata['thumbnail']
+        self.sonic_hash = metadata['sonic_hash']
+
+        self.version = metadata['version']
+
+        self.data = base64.b64decode(waveplot_data['data'])
 
     def upload(self, editor_key):
-        url = b'http://waveplot.net/api/waveplot'
+        url = SERVER + b'/api/waveplot'
 
         data = {
-            'editor':editor_key,
+            'editor': editor_key,
             'image': base64.b64encode(zlib.compress(self.data)),
-            'dr_level':self.dr_level,
-            'length':self.length,
-            'trimmed_length':self.length,
+            'dr_level': self.dr_level,
+            'length': self.length,
+            'trimmed_length': self.length,
             'source_type': self.source_type,
             'sample_rate': self.sample_rate,
             'bit_depth': self.bit_depth,
@@ -344,35 +307,38 @@ class WavePlot(object):
             'content-type': 'application/json',
         })
 
-        print(response.content)
-        data = response.json()
-        if response.status_code == 303:
-            self.uuid = data['message']
-        else:
-            print(data)
+        try:
+            data = response.json()
+        except simplejson.scanner.JSONDecodeError:
+            print("Error: No JSON object in response!")
+
+        if response.status_code < 300:
             self.uuid = data[u'uuid']
             self.image_sha1 = data[u'image_sha1']
             self.thumbnail = data[u'thumbnail']
             self.sonic_hash = data[u'sonic_hash']
+        elif response.status_code == 303:
+            self.uuid = data['message']
+        else:
+            print("Error: " + data.get('message', 'Unknown'))
 
     def link(self, metadata):
-        url = b'http://waveplot.net/api/waveplot_context'
+        url = SERVER + b'/api/waveplot_context'
 
         data = metadata
-        data.update({'waveplot_uuid':self.uuid})
-        print data
+        data.update({'waveplot_uuid': self.uuid})
 
         response = requests.post(url, data=json.dumps(data), headers={
             'content-type': 'application/json',
         })
 
+        try:
+            data = response.json()
+        except simplejson.scanner.JSONDecodeError:
+            print("Error: No JSON object in response!")
+
+        if response.status_code >= 300:
+            print("Error: " + data.get('message', 'Unknown'))
+
     def match(self):
-        pass
-        #self.make_hash()
-
-
-        #self.preview_data = WavePlot.resample_data(self.data, PREVIEW_IMAGE_WIDTH,
-                                          #int(PREVIEW_IMAGE_HEIGHT / 2))
-
-        #print(self.barcode)
-        #print([self.thumbnail_c[x] for x in range(THUMB_IMAGE_WIDTH)])
+        raise NotImplementedError
