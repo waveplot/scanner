@@ -49,7 +49,7 @@ setup(
     requires=[
         'requests (>=2.4.0)',
     ],
-    scripts=['scanner'],
+    scripts=['waveplot-scanner'],
     classifiers=[
         'Intended Audience :: Developers',
         'Intended Audience :: End Users/Desktop',
