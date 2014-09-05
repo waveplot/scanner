@@ -31,6 +31,7 @@ import base64
 import json
 import zlib
 import simplejson
+import sys
 
 from ctypes import Structure, c_char_p, c_uint32, c_uint8, c_uint16, POINTER, \
     c_float, c_size_t, cdll
@@ -119,6 +120,8 @@ class WavePlot(object):
 
         self.data = None
 
+        self.path = None
+
     @classmethod
     def _init_libwaveplot(cls):
         """ Initializes the libwaveplot library, which should have been
@@ -126,7 +129,10 @@ class WavePlot(object):
         Exception to show that the library wasn't found and the installation is
         bad. """
 
-        cls.lib = cdll.LoadLibrary("libwaveplot.so.1.0")
+        if sys.platform.startswith('win32'):
+            cls.lib = cdll.LoadLibrary("libwaveplot-0.dll")
+        else:
+            cls.lib = cdll.LoadLibrary("libwaveplot.so.0")
 
         cls.lib.init()
         cls.lib.alloc_file.restype = POINTER(_File)
@@ -154,17 +160,23 @@ class WavePlot(object):
         w_ptr = self.lib.alloc_waveplot()
         d_ptr = self.lib.alloc_dr()
 
-        audio_path = os.path.abspath(audio_path).encode("utf-8")
-
         if not os.path.isfile(audio_path):
-            return
+            raise IOError("File {} not found".format(audio_path))
 
-        self.lib.load_file(audio_path, f_ptr)
+        self.path = os.path.abspath(audio_path).encode("utf-8")
+
+        result = self.lib.load_file(self.path, f_ptr)
+        if result < 0:
+            raise IOError("Error loading file {!r}".format(self.path))
+
         self.lib.get_info(i_ptr, f_ptr)
 
         self.lib.init_dr(d_ptr, i_ptr)
 
         a_ptr = self.lib.alloc_audio_samples()
+        if not a_ptr:
+            raise MemoryError("Ran out of memory attempting to allocate audio"
+                              "samples")
 
         decoded = self.lib.get_samples(a_ptr, f_ptr, i_ptr)
         while decoded >= 0:

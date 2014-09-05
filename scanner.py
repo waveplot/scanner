@@ -128,7 +128,7 @@ def main():
     upload_queue = Queue()
 
     scanners = [
-        Process(target=scan, args=(scan_queue, upload_queue, i))
+        Process(target=scan, args=(scan_queue, upload_queue))
         for i in range(NUM_SCAN_PROCESSES)
     ]
 
@@ -147,17 +147,20 @@ def main():
                 waveplot.upload(args.key)
                 waveplot.link(metadata)
                 num_uploaded_files += 1
-                print("{}/{}: {}".format(num_uploaded_files, num_found_files,
-                                         waveplot.uuid))
+                print("{}/{}: {} ({})".format(num_uploaded_files,
+                                              num_found_files, waveplot.uuid,
+                                              os.path.relpath(waveplot.path,
+                                                              args.path)))
         except QEmpty:
             pass
 
-        for i, scanner in enumerate(scanners):
+        for scanner in scanners:
             scanner.join()
 
     except KeyboardInterrupt:
         for scanner in scanners:
             scanner.terminate()
+        print('')
 
 if __name__ == '__main__':
     main()
