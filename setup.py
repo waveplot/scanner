@@ -28,7 +28,7 @@ from distutils.core import setup
 
 setup(
     name='waveplot-scanner',
-    version='0.0',
+    version='0.0.1',
     description='Tool to scan audio files, and generate and upload WavePlots.',
     long_description="""WavePlot is a system for storing data about audio
     files. Audio files can be scanned using this python script on any system
@@ -49,7 +49,7 @@ setup(
     requires=[
         'requests (>=2.4.0)',
     ],
-    scripts=['waveplot-scanner'],
+    scripts=['waveplot-scanner.py'],
     classifiers=[
         'Intended Audience :: Developers',
         'Intended Audience :: End Users/Desktop',
