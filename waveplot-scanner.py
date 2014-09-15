@@ -138,7 +138,8 @@ def main():
     try:
         num_found_files = find_files(args.path, scan_queue)
 
-        print("Directory scanned, please wait while WavePlots are uploaded...")
+        print("Directory scanned, please wait while "
+              "{} WavePlots are uploaded...".format(num_found_files))
 
         num_uploaded_files = 0
         try:

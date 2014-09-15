@@ -141,6 +141,7 @@ class WavePlot(object):
         cls.lib.alloc_waveplot.restype = POINTER(_WavePlot)
         cls.lib.alloc_dr.restype = POINTER(_DR)
         cls.lib.version.restype = c_char_p
+        cls.lib.generate_sonic_hash.restype = c_uint16
 
     def _get_waveplot_ptr(self):
         w_ptr = self.lib.alloc_waveplot()
@@ -150,6 +151,8 @@ class WavePlot(object):
         w_ptr.contents.values = (c_float * len(scaled_data))(*scaled_data)
         w_ptr.contents.length = len(scaled_data)
         w_ptr.contents.capacity = len(scaled_data)
+
+        return w_ptr
 
     def generate(self, audio_path):
         """ Generates a WavePlot from an audio file on the local machine. """
@@ -254,18 +257,11 @@ class WavePlot(object):
     def generate_sonic_hash(self):
         w_ptr = self._get_waveplot_ptr()
 
-        self.lib.resample_waveplot(w_ptr, 16, 1)
+        result = self.lib.generate_sonic_hash(w_ptr)
 
-        resampled_data = [int(w_ptr.contents.resample[x]) for x in range(16)]
+        self.sonic_hash = result
 
-        w_ptr.contents.values = POINTER(c_float)()
-
-        self.lib.free_waveplot(w_ptr)
-
-        # Compute value, converting to ASCII '0' and '1' for int conversion.
-        sonic_hash_str = b"".join(chr(ord(x) + 0x30) for x in resampled_data)
-
-        self.sonic_hash = int(sonic_hash_str, 2)
+        return result
 
     def get(self, wp_uuid):
         url = SERVER + b'/api/waveplot/{}'.format(wp_uuid)
